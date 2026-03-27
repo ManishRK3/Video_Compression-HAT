@@ -1,0 +1,14 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Trial Fine-tuning Run",
+			"type": "shell",
+			"command": "python hat/train.py --opt options/train/train_HAT-S_SRx2_finetune_from_SRx2.yml",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

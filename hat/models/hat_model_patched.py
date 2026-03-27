@@ -10,10 +10,8 @@ import math
 from tqdm import tqdm
 from os import path as osp
 
-
 @MODEL_REGISTRY.register()
-class HATModel(SRModel):
-
+class HATModelPatched(SRModel):
     def pre_process(self):
         window_size = self.opt['network_g']['window_size']
         self.scale = self.opt.get('scale', 1)
@@ -87,7 +85,11 @@ class HATModel(SRModel):
         pbar = tqdm(total=len(dataloader), unit='image') if use_pbar else None
 
         for idx, val_data in enumerate(dataloader):
-            img_name = osp.splitext(osp.basename(val_data['lq_path'][0]))[0]
+            # Use gt_path for img_name if lq_path is not present
+            if 'lq_path' in val_data:
+                img_name = osp.splitext(osp.basename(val_data['lq_path'][0]))[0]
+            else:
+                img_name = osp.splitext(osp.basename(val_data['gt_path'][0]))[0]
 
             self.feed_data(val_data)
             self.pre_process()

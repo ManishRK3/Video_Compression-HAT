@@ -3,6 +3,7 @@ from os import path as osp
 
 from basicsr.utils import scandir
 from .video_paired_dataset import VideoPairedDataset
+from .imagenet_paired_dataset_360p import ImageNetPairedDatasetFullFrame
 
 # automatically scan and import dataset modules for registry
 # scan all the files that end with '_dataset.py' under the data folder
