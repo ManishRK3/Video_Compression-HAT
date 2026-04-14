@@ -10,9 +10,9 @@ tile: # use the tile mode for limited GPU memory when testing.
 
 datasets:
   test_1:  # the 1st test dataset
-    name: custom
-    type: SingleImageDataset
-    dataroot_lq: input_dir
+    name: HAT_GAN_Real_sharper
+    type: RealVideoSingleImageDataset
+    dataroot_hr: datasets/VC_testing
     io_backend:
       type: disk
 

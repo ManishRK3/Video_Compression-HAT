@@ -180,18 +180,21 @@ def _compress_lr_frames(frames_data, fps, crf=20):
 # Video writing + metric measurement
 # ---------------------------------------------------------------------------
 
-def _write_and_measure(sr_frames, gt_frames, out_path, fps, lpips_fn, device):
+def _write_and_measure(sr_frames, gt_frames, out_path, fps, lpips_fn, device, skip_metrics=False):
     """
     Write SR frames with libx264 (crf=20).
-    Metrics computed from in-memory frames — no decode round-trip needed.
+    If skip_metrics is True, only writes video, does not compute metrics.
     """
     h, w = sr_frames[0].shape[:2]
     writer = _open_writer(out_path, w, h, fps, crf=20)
     records = []
     for sr, gt in zip(sr_frames, gt_frames):
         writer.append_data(sr)
-        records.append(_frame_metrics(sr, gt, lpips_fn, device))
+        if not skip_metrics:
+            records.append(_frame_metrics(sr, gt, lpips_fn, device))
     writer.close()
+    if skip_metrics:
+        return {'psnr': 0, 'ssim': 0, 'lpips': 0}
     return _average(records)
 
 
@@ -218,7 +221,7 @@ def _make_row(video_name, raw, h264):
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def test_video_pipeline(root_path, make_h264=True):
+def test_video_pipeline(root_path, write_raw=True, write_h264=True, skip_metrics=False):
     opt, _ = parse_options(root_path, is_train=False)
     torch.backends.cudnn.benchmark = True
 
@@ -241,7 +244,7 @@ def test_video_pipeline(root_path, make_h264=True):
             sampler=None, seed=opt['manual_seed']
         )
 
-        if test_set.__class__.__name__ != 'VideoPairedDataset':
+        if test_set.__class__.__name__ not in ['VideoPairedDataset', 'RealVideoSingleImageDataset']:
             model.validation(test_loader, current_iter=opt['name'],
                              tb_logger=None, save_img=opt['val']['save_img'])
             continue
@@ -264,38 +267,46 @@ def test_video_pipeline(root_path, make_h264=True):
             csv_writer = csv.DictWriter(f, fieldnames=_FIELDS)
             csv_writer.writeheader()
 
+
             for video_name, frames_data in video_frames.items():
                 fps = test_set.video_fps.get(video_name, 30)
                 logger.info(f"\n{'='*60}")
                 logger.info(f"Video: {video_name}  ({len(frames_data)} frames @ {fps:.2f}fps)")
 
+                raw_m = h264_m = {'psnr': 0, 'ssim': 0, 'lpips': 0}
+                sr_frames = gt_frames = sr_frames_h264 = None
+
                 # Case 1: Raw LR -> SR
-                logger.info("  [1/2] Raw: LR -> SR model")
-                sr_frames, gt_frames = _run_inference(model, frames_data, opt, desc='raw inference')
-                raw_path = osp.join(save_dir, f"{video_name}_SR_raw.mp4")
-                raw_m    = _write_and_measure(sr_frames, gt_frames, raw_path, fps, lpips_fn, device)
-                logger.info(f"  Raw  — PSNR: {raw_m['psnr']:.4f}  SSIM: {raw_m['ssim']:.4f}  LPIPS: {raw_m['lpips']:.4f}")
-                logger.info(f"  Saved: {raw_path}")
+                if write_raw:
+                    logger.info("  [1/2] Raw: LR -> SR model")
+                    sr_frames, gt_frames = _run_inference(model, frames_data, opt, desc='raw inference')
+                    raw_path = osp.join(save_dir, f"{video_name}_SR_raw.mp4")
+                    raw_m    = _write_and_measure(sr_frames, gt_frames, raw_path, fps, lpips_fn, device, skip_metrics=skip_metrics)
+                    if not skip_metrics:
+                        logger.info(f"  Raw  — PSNR: {raw_m['psnr']:.4f}  SSIM: {raw_m['ssim']:.4f}  LPIPS: {raw_m['lpips']:.4f}")
+                    logger.info(f"  Saved: {raw_path}")
 
                 # Case 2: LR -> H264 compress -> SR (DVR approach)
-
-                if make_h264:
+                if write_h264:
                     logger.info("  [2/2] H264: LR -> H264 compress -> SR model")
+                    if sr_frames is None or gt_frames is None:
+                        # If raw wasn't run, need to get gt_frames
+                        sr_frames, gt_frames = _run_inference(model, frames_data, opt, desc='raw inference (for gt)')
                     compressed_frames_data = _compress_lr_frames(frames_data, fps, crf=20)
                     sr_frames_h264, _ = _run_inference(model, compressed_frames_data, opt, desc='h264 inference')
                     h264_path = osp.join(save_dir, f"{video_name}_SR_h264.mp4")
-                    h264_m    = _write_and_measure(sr_frames_h264, gt_frames, h264_path, fps, lpips_fn, device)
-                    logger.info(f"  H264 — PSNR: {h264_m['psnr']:.4f}  SSIM: {h264_m['ssim']:.4f}  LPIPS: {h264_m['lpips']:.4f}")
+                    h264_m    = _write_and_measure(sr_frames_h264, gt_frames, h264_path, fps, lpips_fn, device, skip_metrics=skip_metrics)
+                    if not skip_metrics:
+                        logger.info(f"  H264 — PSNR: {h264_m['psnr']:.4f}  SSIM: {h264_m['ssim']:.4f}  LPIPS: {h264_m['lpips']:.4f}")
                     logger.info(f"  Saved: {h264_path}")
-                else:
-                    h264_m = {'psnr': 0.0, 'ssim': 0.0, 'lpips': 0.0}
 
-                row = _make_row(video_name, raw_m, h264_m)
-                csv_writer.writerow(row)
-                f.flush()
-                all_rows.append(row)
+                if not skip_metrics:
+                    row = _make_row(video_name, raw_m, h264_m)
+                    csv_writer.writerow(row)
+                    f.flush()
+                    all_rows.append(row)
 
-            if all_rows:
+            if not skip_metrics and all_rows:
                 mean_row = {'video': 'MEAN'}
                 for field in _FIELDS[1:]:
                     mean_row[field] = f"{np.mean([float(r[field]) for r in all_rows]):.4f}"
@@ -310,4 +321,5 @@ if __name__ == '__main__':
     # Set this to False to skip H264 video generation
     make_h264 = False  # Change to True to enable H264 video generation
     root_path = osp.abspath(osp.join(__file__, osp.pardir, osp.pardir))
-    test_video_pipeline(root_path, make_h264=make_h264)
+    # Example usage: set write_raw or write_h264 as needed
+    test_video_pipeline(root_path, write_raw=True, write_h264=True, skip_metrics=True)
