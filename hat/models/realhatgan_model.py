@@ -1,12 +1,12 @@
 import numpy as np
 import random
 import torch
-from basicsr.data.degradations import random_add_gaussian_noise_pt, random_add_poisson_noise_pt
-from basicsr.data.transforms import paired_random_crop
-from basicsr.models.srgan_model import SRGANModel
-from basicsr.utils import DiffJPEG, USMSharp
-from basicsr.utils.img_process_util import filter2D
-from basicsr.utils.registry import MODEL_REGISTRY
+from hat.data.degradations import random_add_gaussian_noise_pt, random_add_poisson_noise_pt
+from hat.data.transforms import paired_random_crop
+from hat.models.srgan_model import SRGANModel
+from hat.utils import DiffJPEG, USMSharp
+from hat.utils.img_process_util import filter2D
+from hat.utils.registry import MODEL_REGISTRY
 from collections import OrderedDict
 from torch.nn import functional as F
 

@@ -3,7 +3,7 @@ import cv2
 from PIL import Image
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset
-from basicsr.utils.registry import DATASET_REGISTRY
+from hat.utils.registry import DATASET_REGISTRY
 
 @DATASET_REGISTRY.register()
 class RealVideoSingleImageDataset(Dataset):

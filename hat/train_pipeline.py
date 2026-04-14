@@ -5,13 +5,13 @@ import time
 import torch
 from os import path as osp
 
-from basicsr.data import build_dataloader, build_dataset
-from basicsr.data.data_sampler import EnlargedSampler
-from basicsr.data.prefetch_dataloader import CPUPrefetcher, CUDAPrefetcher
-from basicsr.models import build_model
-from basicsr.utils import (AvgTimer, MessageLogger, check_resume, get_env_info, get_root_logger, get_time_str,
-                           init_tb_logger, init_wandb_logger, make_exp_dirs, mkdir_and_rename, scandir)
-from basicsr.utils.options import copy_opt_file, dict2str, parse_options
+from hat.data import build_dataloader, build_dataset
+from hat.data.data_sampler import EnlargedSampler
+from hat.data.prefetch_dataloader import CPUPrefetcher, CUDAPrefetcher
+from hat.models import build_model
+from hat.utils import (AvgTimer, MessageLogger, check_resume, get_env_info, get_root_logger, get_time_str,
+                       init_tb_logger, init_wandb_logger, make_exp_dirs, mkdir_and_rename, scandir)
+from hat.utils.options import copy_opt_file, dict2str, parse_options
 
 
 def init_tb_loggers(opt):
@@ -94,7 +94,6 @@ def train_pipeline(root_path):
     opt['root_path'] = root_path
 
     torch.backends.cudnn.benchmark = True
-    # torch.backends.cudnn.deterministic = True
 
     # load resume states if necessary
     resume_state = load_resume_state(opt)
@@ -110,7 +109,7 @@ def train_pipeline(root_path):
     # WARNING: should not use get_root_logger in the above codes, including the called functions
     # Otherwise the logger will not be properly initialized
     log_file = osp.join(opt['path']['log'], f"train_{opt['name']}_{get_time_str()}.log")
-    logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
+    logger = get_root_logger(logger_name='hat', log_level=logging.INFO, log_file=log_file)
     logger.info(get_env_info())
     logger.info(dict2str(opt))
     # initialize wandb and tb loggers

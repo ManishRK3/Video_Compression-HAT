@@ -1,10 +1,10 @@
 import torch
 from torch.nn import functional as F
 
-from basicsr.utils.registry import MODEL_REGISTRY
-from basicsr.models.sr_model import SRModel
-from basicsr.metrics import calculate_metric
-from basicsr.utils import imwrite, tensor2img
+from hat.utils.registry import MODEL_REGISTRY
+from hat.models.sr_model import SRModel
+from hat.metrics import calculate_metric
+from hat.utils import imwrite, tensor2img
 
 import math
 from tqdm import tqdm

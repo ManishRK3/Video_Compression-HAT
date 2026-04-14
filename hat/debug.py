@@ -14,7 +14,7 @@ import numpy as np
 from skimage.metrics import peak_signal_noise_ratio as sk_psnr
 from skimage.metrics import structural_similarity as sk_ssim
 from skimage.util import img_as_float
-from basicsr.metrics import calculate_metric
+from hat.metrics import calculate_metric
 
 
 # ---------------------------------------------------------------------------

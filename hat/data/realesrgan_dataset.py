@@ -6,12 +6,12 @@ import os.path as osp
 import random
 import time
 import torch
-from basicsr.data.degradations import circular_lowpass_kernel, random_mixed_kernels
-from basicsr.data.transforms import augment
-from basicsr.utils import FileClient, get_root_logger, imfrombytes, img2tensor
-from basicsr.utils.registry import DATASET_REGISTRY
+from hat.data.degradations import circular_lowpass_kernel, random_mixed_kernels
+from hat.data.transforms import augment
+from hat.utils import FileClient, get_root_logger, imfrombytes, img2tensor
+from hat.utils.registry import DATASET_REGISTRY
 from torch.utils import data as data
-from basicsr.data.data_util import scandir
+from hat.data.data_util import scandir
 
 @DATASET_REGISTRY.register()
 class RealESRGANDataset(data.Dataset):

@@ -1,4 +1,4 @@
-from basicsr.utils.registry import ARCH_REGISTRY
+from hat.utils.registry import ARCH_REGISTRY
 from torch import nn as nn
 from torch.nn import functional as F
 

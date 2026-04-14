@@ -2,23 +2,22 @@ import logging
 import torch
 from os import path as osp
 
-from basicsr.data import build_dataloader, build_dataset
-from basicsr.models import build_model
-from basicsr.utils import get_env_info, get_root_logger, get_time_str, make_exp_dirs
-from basicsr.utils.options import dict2str, parse_options
+from hat.data import build_dataloader, build_dataset
+from hat.models import build_model
+from hat.utils import get_env_info, get_root_logger, get_time_str, make_exp_dirs
+from hat.utils.options import dict2str, parse_options
 
 
 def test_pipeline(root_path):
-    # parse options, set distributed setting, set ramdom seed
+    # parse options, set distributed setting, set random seed
     opt, _ = parse_options(root_path, is_train=False)
 
     torch.backends.cudnn.benchmark = True
-    # torch.backends.cudnn.deterministic = True
 
     # mkdir and initialize loggers
     make_exp_dirs(opt)
     log_file = osp.join(opt['path']['log'], f"test_{opt['name']}_{get_time_str()}.log")
-    logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
+    logger = get_root_logger(logger_name='hat', log_level=logging.INFO, log_file=log_file)
     logger.info(get_env_info())
     logger.info(dict2str(opt))
 

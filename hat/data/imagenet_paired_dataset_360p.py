@@ -4,11 +4,12 @@ import os.path as osp
 from torch.utils import data as data
 from torchvision.transforms.functional import normalize
 
-from basicsr.data.data_util import paths_from_lmdb, scandir
-from basicsr.data.transforms import augment
-from basicsr.utils import FileClient, imfrombytes, img2tensor
-from basicsr.utils.matlab_functions import imresize, rgb2ycbcr
-from basicsr.utils.registry import DATASET_REGISTRY
+from hat.data.data_util import paths_from_lmdb, scandir
+from hat.data.transforms import augment
+from hat.utils import FileClient, imfrombytes, img2tensor
+from hat.utils.matlab_functions import imresize
+from hat.utils.color_util import rgb2ycbcr
+from hat.utils.registry import DATASET_REGISTRY
 
 @DATASET_REGISTRY.register()
 class ImageNetPairedDatasetFullFrame(data.Dataset):

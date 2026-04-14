@@ -17,10 +17,10 @@ import hat.archs
 import hat.data
 import hat.models
 
-from basicsr.data import build_dataloader, build_dataset
-from basicsr.models import build_model
-from basicsr.utils import get_env_info, get_root_logger, get_time_str, make_exp_dirs, tensor2img
-from basicsr.utils.options import dict2str, parse_options
+from hat.data import build_dataloader, build_dataset
+from hat.models import build_model
+from hat.utils import get_env_info, get_root_logger, get_time_str, make_exp_dirs, tensor2img
+from hat.utils.options import dict2str, parse_options
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ def test_video_pipeline(root_path, write_raw=True, write_h264=True, skip_metrics
 
     make_exp_dirs(opt)
     log_file = osp.join(opt['path']['log'], f"test_{opt['name']}_{get_time_str()}.log")
-    logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
+    logger = get_root_logger(logger_name='hat', log_level=logging.INFO, log_file=log_file)
     logger.info(get_env_info())
     logger.info(dict2str(opt))
 
