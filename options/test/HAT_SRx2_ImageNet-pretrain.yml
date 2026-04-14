@@ -16,11 +16,11 @@ datasets:
   #       type: disk
         
   test_1:
-    name: VC_SRx2
+    name: VC_SRx2_Imgenet_pretrain
     type: VideoPairedDataset
     dataroot_hr: datasets/VC_testing
     scale: 2
-    batch_size: 12
+    batch_size: 24
     io_backend:
       type: disk
 

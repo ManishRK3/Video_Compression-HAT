@@ -5,11 +5,19 @@ num_gpu: 1  # set num_gpu: 0 for cpu mode
 manual_seed: 0
 
 datasets:
-  test_1:  # the 1st test dataset
-    name: Set5
-    type: PairedImageDataset
-    dataroot_gt: ./datasets/Set5/GTmod2
-    dataroot_lq: ./datasets/Set5/LRbicx2
+  # test_1:  # the 1st test dataset
+  #   name: Set5
+  #   type: PairedImageDataset
+  #   dataroot_gt: ./datasets/Set5/GTmod2
+  #   dataroot_lq: ./datasets/Set5/LRbicx2
+  #   io_backend:
+  #     type: disk
+  test_1:
+    name: VC_SRx2
+    type: VideoPairedDataset
+    dataroot_hr: datasets/VC_testing
+    scale: 2
+    batch_size: 24
     io_backend:
       type: disk
 

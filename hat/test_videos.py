@@ -218,7 +218,7 @@ def _make_row(video_name, raw, h264):
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def test_video_pipeline(root_path):
+def test_video_pipeline(root_path, make_h264=True):
     opt, _ = parse_options(root_path, is_train=False)
     torch.backends.cudnn.benchmark = True
 
@@ -278,13 +278,17 @@ def test_video_pipeline(root_path):
                 logger.info(f"  Saved: {raw_path}")
 
                 # Case 2: LR -> H264 compress -> SR (DVR approach)
-                logger.info("  [2/2] H264: LR -> H264 compress -> SR model")
-                compressed_frames_data = _compress_lr_frames(frames_data, fps, crf=20)
-                sr_frames_h264, _ = _run_inference(model, compressed_frames_data, opt, desc='h264 inference')
-                h264_path = osp.join(save_dir, f"{video_name}_SR_h264.mp4")
-                h264_m    = _write_and_measure(sr_frames_h264, gt_frames, h264_path, fps, lpips_fn, device)
-                logger.info(f"  H264 — PSNR: {h264_m['psnr']:.4f}  SSIM: {h264_m['ssim']:.4f}  LPIPS: {h264_m['lpips']:.4f}")
-                logger.info(f"  Saved: {h264_path}")
+
+                if make_h264:
+                    logger.info("  [2/2] H264: LR -> H264 compress -> SR model")
+                    compressed_frames_data = _compress_lr_frames(frames_data, fps, crf=20)
+                    sr_frames_h264, _ = _run_inference(model, compressed_frames_data, opt, desc='h264 inference')
+                    h264_path = osp.join(save_dir, f"{video_name}_SR_h264.mp4")
+                    h264_m    = _write_and_measure(sr_frames_h264, gt_frames, h264_path, fps, lpips_fn, device)
+                    logger.info(f"  H264 — PSNR: {h264_m['psnr']:.4f}  SSIM: {h264_m['ssim']:.4f}  LPIPS: {h264_m['lpips']:.4f}")
+                    logger.info(f"  Saved: {h264_path}")
+                else:
+                    h264_m = {'psnr': 0.0, 'ssim': 0.0, 'lpips': 0.0}
 
                 row = _make_row(video_name, raw_m, h264_m)
                 csv_writer.writerow(row)
@@ -303,5 +307,7 @@ def test_video_pipeline(root_path):
 
 
 if __name__ == '__main__':
+    # Set this to False to skip H264 video generation
+    make_h264 = False  # Change to True to enable H264 video generation
     root_path = osp.abspath(osp.join(__file__, osp.pardir, osp.pardir))
-    test_video_pipeline(root_path)
+    test_video_pipeline(root_path, make_h264=make_h264)
