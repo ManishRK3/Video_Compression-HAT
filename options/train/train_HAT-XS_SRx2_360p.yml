@@ -1,5 +1,5 @@
 # general settings
-name: train_HAT_SRx2_from_scratch
+name: train_HAT-XS_SRx2_from_scratch
 model_type: HATModel
 scale: 2
 num_gpu: 1
@@ -8,11 +8,11 @@ manual_seed: 0
 # dataset and data loader settings
 datasets:
   train:
-    name: DF2K
+    name: VC360p
     type: PairedImageDataset
-    dataroot_gt: datasets/DF2K/DF2K_HR_sub
-    dataroot_lq: datasets/DF2K/DF2K_bicx2_sub
-    meta_info_file: hat/data/meta_info/meta_info_DF2Ksub_GT.txt
+    dataroot_gt: /home/manish/Data/Video_Compression_360p/training_data_v3/train/train_hq
+    dataroot_lq: /home/manish/Data/Video_Compression_360p/training_data_v3/train/train_lq
+    # meta_info_file: hat/data/meta_info/meta_info_DF2Ksub_GT.txt
     io_backend:
       type: disk
 
@@ -23,25 +23,25 @@ datasets:
     # data loader
     use_shuffle: true
     num_worker_per_gpu: 6
-    batch_size_per_gpu: 4
+    batch_size_per_gpu: 6
     dataset_enlarge_ratio: 1
     prefetch_mode: ~
 
   val_1:
-    name: Set5
+    name: VC360p_val
     type: PairedImageDataset
-    dataroot_gt: ./datasets/Set5/GTmod2
-    dataroot_lq: ./datasets/Set5/LRbicx2
+    dataroot_gt: /home/manish/Data/Video_Compression_360p/training_data_v3/val_2/val_hq
+    dataroot_lq: /home/manish/Data/Video_Compression_360p/training_data_v3/val_2/val_lq
     io_backend:
       type: disk
 
-  val_2:
-    name: Set14
-    type: PairedImageDataset
-    dataroot_gt: ./datasets/Set14/GTmod2
-    dataroot_lq: ./datasets/Set14/LRbicx2
-    io_backend:
-      type: disk
+  # val_2:
+  #   name: Set14
+  #   type: PairedImageDataset
+  #   dataroot_gt: ./datasets/Set14/GTmod2
+  #   dataroot_lq: ./datasets/Set14/LRbicx2
+  #   io_backend:
+  #     type: disk
 
   # val_3:
   #   name: Urban100
@@ -65,7 +65,7 @@ network_g:
   overlap_ratio: 0.5
   img_range: 1.
   depths: [6, 6, 6, 6, 6, 6]
-  embed_dim: 180
+  embed_dim: 108
   num_heads: [6, 6, 6, 6, 6, 6]
   mlp_ratio: 2
   upsampler: 'pixelshuffle'
@@ -89,6 +89,7 @@ train:
   scheduler:
     type: MultiStepLR
     milestones: [250000, 400000, 450000, 475000]
+    # milestones: [300000, 500000, 650000, 700000, 750000]
     gamma: 0.5
 
   total_iter: 500000
@@ -102,7 +103,7 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 5e3
+  val_freq: !!float 1e4
   save_img: false
   pbar: False
 
@@ -110,13 +111,18 @@ val:
     psnr:
       type: calculate_psnr
       crop_border: 2
-      test_y_channel: true
+      test_y_channel: flase
       better: higher  # the higher, the better. Default: higher
     ssim:
       type: calculate_ssim
       crop_border: 2
-      test_y_channel: true
+      test_y_channel: false
       better: higher  # the higher, the better. Default: higher
+
+  early_stop:
+    metric: psnr        # which metric to watch
+    min_delta: 0.01     # minimum improvement in dB to count as progress
+    patience: 5         # stop after this many consecutive validations with no improvement
 
 # logging settings
 logger:
@@ -131,3 +137,6 @@ logger:
 dist_params:
   backend: nccl
   port: 29500
+
+#  python hat/train.py -opt options/train/train_HAT-XS_SRx2_360p.yml
+#  nohup python pruning.py > pruning_20260415.log 2>&1 &

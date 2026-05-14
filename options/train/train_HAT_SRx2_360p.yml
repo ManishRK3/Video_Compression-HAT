@@ -8,11 +8,11 @@ manual_seed: 0
 # dataset and data loader settings
 datasets:
   train:
-    name: DF2K
+    name: VC360p
     type: PairedImageDataset
-    dataroot_gt: datasets/DF2K/DF2K_HR_sub
-    dataroot_lq: datasets/DF2K/DF2K_bicx2_sub
-    meta_info_file: hat/data/meta_info/meta_info_DF2Ksub_GT.txt
+    dataroot_gt: /home/manish/Data/Video_Compression_360p/training_data_v3/train/train_hq
+    dataroot_lq: /home/manish/Data/Video_Compression_360p/training_data_v3/train/train_lq
+    # meta_info_file: hat/data/meta_info/meta_info_DF2Ksub_GT.txt
     io_backend:
       type: disk
 
@@ -28,20 +28,20 @@ datasets:
     prefetch_mode: ~
 
   val_1:
-    name: Set5
+    name: VC360p_val
     type: PairedImageDataset
-    dataroot_gt: ./datasets/Set5/GTmod2
-    dataroot_lq: ./datasets/Set5/LRbicx2
+    dataroot_gt: /home/manish/Data/Video_Compression_360p/training_data_v3/val_2/val_hq
+    dataroot_lq: /home/manish/Data/Video_Compression_360p/training_data_v3/val_2/val_lq
     io_backend:
       type: disk
 
-  val_2:
-    name: Set14
-    type: PairedImageDataset
-    dataroot_gt: ./datasets/Set14/GTmod2
-    dataroot_lq: ./datasets/Set14/LRbicx2
-    io_backend:
-      type: disk
+  # val_2:
+  #   name: Set14
+  #   type: PairedImageDataset
+  #   dataroot_gt: ./datasets/Set14/GTmod2
+  #   dataroot_lq: ./datasets/Set14/LRbicx2
+  #   io_backend:
+  #     type: disk
 
   # val_3:
   #   name: Urban100
@@ -102,7 +102,7 @@ train:
 
 # validation settings
 val:
-  val_freq: !!float 5e3
+  val_freq: !!float 1e4
   save_img: false
   pbar: False
 

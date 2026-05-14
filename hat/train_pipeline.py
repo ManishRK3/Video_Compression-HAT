@@ -150,6 +150,12 @@ def train_pipeline(root_path):
     data_timer, iter_timer = AvgTimer(), AvgTimer()
     start_time = time.time()
 
+    # early stopping state
+    early_stop_opt = opt.get('val', {}).get('early_stop') if opt.get('val') else None
+    early_stop_history = []
+    early_stop_no_improve = 0
+    should_stop = False
+
     for epoch in range(start_epoch, total_epochs + 1):
         train_sampler.set_epoch(epoch)
         prefetcher.reset()
@@ -159,7 +165,7 @@ def train_pipeline(root_path):
             data_timer.record()
 
             current_iter += 1
-            if current_iter > total_iters:
+            if current_iter > total_iters or should_stop:
                 break
             # update learning rate
             model.update_learning_rate(current_iter, warmup_iter=opt['train'].get('warmup_iter', -1))
@@ -191,11 +197,37 @@ def train_pipeline(root_path):
                 for val_loader in val_loaders:
                     model.validation(val_loader, current_iter, tb_logger, opt['val']['save_img'])
 
+                # early stopping check
+                if early_stop_opt is not None and hasattr(model, 'metric_results'):
+                    metric_name = early_stop_opt.get('metric', 'psnr')
+                    min_delta = float(early_stop_opt.get('min_delta', 0.01))
+                    patience = int(early_stop_opt.get('patience', 5))
+                    if metric_name in model.metric_results:
+                        current_val = model.metric_results[metric_name]
+                        if early_stop_history and current_val - max(early_stop_history) < min_delta:
+                            early_stop_no_improve += 1
+                        else:
+                            early_stop_no_improve = 0
+                        early_stop_history.append(current_val)
+                        logger.info(
+                            f'Early stop monitor [{metric_name}]: current={current_val:.4f}, '
+                            f'best={max(early_stop_history):.4f}, no_improve_count={early_stop_no_improve}/{patience}'
+                        )
+                        if early_stop_no_improve >= patience:
+                            logger.info(
+                                f'Early stopping triggered at iter {current_iter}: {metric_name} has not improved '
+                                f'by >= {min_delta} dB for {patience} consecutive validations.'
+                            )
+                            model.save(epoch, current_iter)
+                            should_stop = True
+
             data_timer.start()
             iter_timer.start()
             train_data = prefetcher.next()
         # end of iter
 
+        if should_stop:
+            break
     # end of epoch
 
     consumed_time = str(datetime.timedelta(seconds=int(time.time() - start_time)))

@@ -1,0 +1,55 @@
+name: test_HAT-XS_exp1_val_2
+
+model_type: HATModel
+scale: 2
+num_gpu: 1
+manual_seed: 0
+
+datasets:
+  val_1:
+    name: VC360p_val
+    type: PairedImageDataset
+    dataroot_gt: /home/manish/Data/Video_Compression_360p/training_data_v3/val_2/val_hq
+    dataroot_lq: /home/manish/Data/Video_Compression_360p/training_data_v3/val_2/val_lq
+    # dataroot_gt: datasets/VC_testing_360p_frames/hr
+    # dataroot_lq: datasets/VC_testing_360p_frames/lq
+    # dataroot_gt: datasets/VC_testing_360p_frames_640/hr
+    # dataroot_lq: datasets/VC_testing_360p_frames_640/lq
+    io_backend:
+      type: disk
+
+network_g:
+  type: HAT
+  upscale: 2
+  in_chans: 3
+  img_size: 64
+  window_size: 16
+  compress_ratio: 9
+  squeeze_factor: 30
+  conv_scale: 0.01
+  overlap_ratio: 0.5
+  img_range: 1.
+  depths: [6, 6, 6, 6, 6, 6]
+  embed_dim: 108
+  num_heads: [6, 6, 6, 6, 6, 6]
+  mlp_ratio: 2
+  upsampler: pixelshuffle
+  resi_connection: 1conv
+
+path:
+  pretrain_network_g: experiments/train_HAT-XS_SRx2_exp1_compress9/models/net_g_300000.pth
+  strict_load_g: true
+  param_key_g: params_ema
+
+val:
+  save_img: false
+  suffix: ~
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 2
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 2
+      test_y_channel: true

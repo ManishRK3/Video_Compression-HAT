@@ -1,17 +1,18 @@
+import argparse
+import csv
 import logging
 import os
-import csv
 import subprocess
+import sys
 import tempfile
+from os import path as osp
+
+import cv2
 import numpy as np
 import torch
-from collections import defaultdict
-from os import path as osp
-from tqdm import tqdm
-
-import lpips
 from skimage.metrics import peak_signal_noise_ratio as sk_psnr, structural_similarity as sk_ssim
 from skimage.util import img_as_float
+from tqdm import tqdm
 
 import hat.archs
 import hat.data
@@ -24,14 +25,43 @@ from hat.utils.options import dict2str, parse_options
 
 
 # ---------------------------------------------------------------------------
-# Video I/O — ffmpeg subprocess, no imageio dependency
+# Model summary
+# ---------------------------------------------------------------------------
+
+def _print_model_summary(model, logger, bench_size=320):
+    try:
+        from thop import profile, clever_format
+    except ImportError:
+        logger.warning('thop not installed — run `pip install thop` for GMacs profiling')
+        return
+
+    net = model.net_g
+    device = next(net.parameters()).device
+    dummy = torch.randn(1, 3, bench_size, bench_size).to(device)
+
+    # Scale from square benchmark to actual 360p LQ area (640x360)
+    scale_to_360p = (640 * 360) / (bench_size * bench_size)
+
+    net.eval()
+    with torch.no_grad():
+        macs, params = profile(net, inputs=(dummy,), verbose=False)
+
+    _, params_str = clever_format([macs, params], '%.2f')
+    logger.info('=== Model Summary ===')
+    logger.info(f'Architecture    : {net.__class__.__name__}')
+    logger.info(f'Benchmark input : {bench_size}x{bench_size}')
+    logger.info(f'GMacs ({bench_size}x{bench_size})  : {macs / 1e9:.1f} G')
+    logger.info(f'GMacs (~360p LQ): {macs * scale_to_360p / 1e9:.1f} G  (scaled from {bench_size}x{bench_size})')
+    logger.info(f'Params          : {params / 1e6:.2f} M  ({params_str})')
+    logger.info(str(net))
+
+
+# ---------------------------------------------------------------------------
+# Video I/O
 # ---------------------------------------------------------------------------
 
 class _FfmpegWriter:
-    """
-    Wraps an ffmpeg subprocess. Accepts BGR uint8 numpy frames via .append_data().
-    ffmpeg receives raw BGR on stdin and encodes to the output path.
-    """
+    """Wraps an ffmpeg subprocess. Accepts BGR uint8 numpy frames via .append_data()."""
     def __init__(self, path, w, h, fps, codec, crf):
         cmd = [
             'ffmpeg', '-y', '-loglevel', 'error',
@@ -52,31 +82,32 @@ class _FfmpegWriter:
 
 
 def _open_writer(path, w, h, fps, crf=20):
-    """libx264, crf=20 — matches DVR pipeline default."""
     return _FfmpegWriter(path, w, h, fps, codec='libx264', crf=crf)
 
 
 def _open_writer_nvenc(path, w, h, fps, crf=23):
-    """h264_nvenc GPU encoder — used for the H264 compression case."""
     return _FfmpegWriter(path, w, h, fps, codec='h264_nvenc', crf=crf)
 
 
-def _read_frames(path, w, h):
-    """Decode a video and yield BGR uint8 frames."""
-    cmd = [
-        'ffmpeg', '-loglevel', 'error',
-        '-i', path,
-        '-f', 'rawvideo', '-pix_fmt', 'bgr24', 'pipe:1',
-    ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-    frame_bytes = w * h * 3
+def _get_video_info(path):
+    cap = cv2.VideoCapture(path)
+    w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    n   = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return w, h, fps, n
+
+
+def _iter_frames(path):
+    """Yield BGR uint8 frames sequentially — keeps VideoCapture open, no per-frame seeking."""
+    cap = cv2.VideoCapture(path)
     while True:
-        raw = proc.stdout.read(frame_bytes)
-        if len(raw) < frame_bytes:
+        ret, frame = cap.read()
+        if not ret:
             break
-        yield np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
-    proc.stdout.close()
-    proc.wait()
+        yield frame
+    cap.release()
 
 
 # ---------------------------------------------------------------------------
@@ -86,8 +117,8 @@ def _read_frames(path, w, h):
 def _calculate_ssim_psnr(img1_bgr, img2_bgr):
     img1 = img_as_float(img1_bgr)
     img2 = img_as_float(img2_bgr)
-    ssim = sk_ssim(img1, img2, channel_axis=2, data_range=255)
-    psnr = sk_psnr(img1, img2)
+    ssim = sk_ssim(img1, img2, channel_axis=2, data_range=1.0)
+    psnr = sk_psnr(img1, img2, data_range=1.0)
     return ssim, psnr
 
 
@@ -99,7 +130,7 @@ def _to_lpips_tensor(img_bgr, device):
 def _frame_metrics(sr_bgr, gt_bgr, lpips_fn, device):
     ssim, psnr = _calculate_ssim_psnr(sr_bgr, gt_bgr)
     lp = lpips_fn(_to_lpips_tensor(sr_bgr, device),
-                  _to_lpips_tensor(gt_bgr, device)).item()
+                  _to_lpips_tensor(gt_bgr, device)).item() if lpips_fn is not None else 0.0
     return {'psnr': psnr, 'ssim': ssim, 'lpips': lp}
 
 
@@ -109,97 +140,7 @@ def _average(records):
 
 
 # ---------------------------------------------------------------------------
-# Inference
-# ---------------------------------------------------------------------------
-
-def _run_inference(model, frames_data, opt, desc='inference'):
-    """
-    Run HAT on a list of val_data dicts.
-    Returns (sr_frames, gt_frames) as lists of uint8 BGR numpy arrays.
-    """
-    sr_frames, gt_frames = [], []
-    for val_data in tqdm(frames_data, desc=f'  {desc}', leave=False, unit='frame'):
-        model.feed_data(val_data)
-        model.pre_process()
-        if 'tile' in opt:
-            model.tile_process()
-        else:
-            model.process()
-        model.post_process()
-
-        visuals = model.get_current_visuals()
-        sr_frames.append(tensor2img([visuals['result']]))  # BGR uint8
-        gt_frames.append(tensor2img([visuals['gt']]))
-
-        del model.lq, model.output, model.gt
-        torch.cuda.empty_cache()
-
-    return sr_frames, gt_frames
-
-
-def _compress_lr_frames(frames_data, fps, crf=20):
-    """
-    DVR approach: compress LR frames through H264 (nvenc) and decode back,
-    then replace 'lq' in each val_data with the compressed version.
-
-    Simulates real deployment where the input has been H264-compressed
-    before the SR model sees it.
-    """
-    # Extract LR frames as BGR uint8
-    lr_frames = []
-    for val_data in frames_data:
-        lq = val_data['lq'][0]  # (C, H, W), float [0,1], BGR
-        bgr = (lq.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-        lr_frames.append(bgr)
-
-    h, w = lr_frames[0].shape[:2]
-    tmp_path = tempfile.mktemp(suffix='_lr_h264.mp4')
-
-    # Encode LR frames to temp H264 file
-    writer = _open_writer_nvenc(tmp_path, w, h, fps, crf=crf)
-    for frame in lr_frames:
-        writer.append_data(frame)
-    writer.close()
-
-    # Decode back and replace lq in val_data
-    compressed_frames_data = []
-    for val_data, decoded_bgr in zip(frames_data, _read_frames(tmp_path, w, h)):
-        compressed_lq = torch.from_numpy(
-            decoded_bgr.astype(np.float32) / 255.0
-        ).permute(2, 0, 1).unsqueeze(0)
-
-        new_val_data = {k: v for k, v in val_data.items()}
-        new_val_data['lq'] = compressed_lq
-        compressed_frames_data.append(new_val_data)
-
-    os.remove(tmp_path)
-    return compressed_frames_data
-
-
-# ---------------------------------------------------------------------------
-# Video writing + metric measurement
-# ---------------------------------------------------------------------------
-
-def _write_and_measure(sr_frames, gt_frames, out_path, fps, lpips_fn, device, skip_metrics=False):
-    """
-    Write SR frames with libx264 (crf=20).
-    If skip_metrics is True, only writes video, does not compute metrics.
-    """
-    h, w = sr_frames[0].shape[:2]
-    writer = _open_writer(out_path, w, h, fps, crf=20)
-    records = []
-    for sr, gt in zip(sr_frames, gt_frames):
-        writer.append_data(sr)
-        if not skip_metrics:
-            records.append(_frame_metrics(sr, gt, lpips_fn, device))
-    writer.close()
-    if skip_metrics:
-        return {'psnr': 0, 'ssim': 0, 'lpips': 0}
-    return _average(records)
-
-
-# ---------------------------------------------------------------------------
-# CSV
+# CSV helpers
 # ---------------------------------------------------------------------------
 
 _FIELDS = ['video',
@@ -218,11 +159,165 @@ def _make_row(video_name, raw, h264):
 
 
 # ---------------------------------------------------------------------------
+# Inference
+# ---------------------------------------------------------------------------
+
+def _bgr_to_tensor(bgr, device):
+    """BGR uint8 HWC → float32 (1,3,H,W) tensor on device."""
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    return torch.from_numpy(rgb.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
+
+
+def _run_sr(model, lq_tensor, opt):
+    """Run SR on a single LQ tensor. Returns SR as BGR uint8 numpy."""
+    model.feed_data({'lq': lq_tensor})
+    model.pre_process()
+    if 'tile' in opt:
+        model.tile_process()
+    else:
+        model.process()
+    model.post_process()
+    sr_bgr = tensor2img([model.get_current_visuals()['result']])
+    del model.lq, model.output
+    if hasattr(model, 'gt'):
+        del model.gt
+    return sr_bgr
+
+
+# ---------------------------------------------------------------------------
+# Per-video pipeline
+# ---------------------------------------------------------------------------
+
+def _process_video(video_path, model, opt, save_dir,
+                   lr_h, lr_w, hr_h, hr_w,
+                   lpips_fn, device,
+                   write_raw, write_h264, skip_metrics, logger,
+                   crop_to_640=False):
+    video_name = osp.splitext(osp.basename(video_path))[0]
+    vid_w, vid_h, fps, n_frames = _get_video_info(video_path)
+
+    # When crop_to_640 is enabled, override dimensions and define a crop function.
+    # Portrait 720p (720×H) → crop width to 640 (remove right 80px).
+    # Landscape 720p (W×720) → crop height to 640 (remove bottom 80px).
+    if crop_to_640:
+        if vid_w == 720:
+            scale = hr_h // lr_h
+            hr_w = 640
+            lr_w = 640 // scale
+        elif vid_h == 720:
+            scale = hr_h // lr_h
+            hr_h = 640
+            lr_h = 640 // scale
+
+    def _crop(frame):
+        if crop_to_640:
+            if vid_w == 720:
+                return frame[:, :640, :]
+            if vid_h == 720:
+                return frame[:640, :, :]
+        return frame
+
+    logger.info(f"\n{'='*60}")
+    logger.info(f"Video: {video_name}  ({n_frames} frames @ {fps:.2f}fps)")
+    if crop_to_640 and (vid_w == 720 or vid_h == 720):
+        logger.info(f"  720p crop applied → HR: {hr_h}×{hr_w}  LQ: {lr_h}×{lr_w}")
+
+    # --- Pass 1: raw LR → SR, and build compressed LR for H264 pass ---
+    raw_path      = osp.join(save_dir, f"{video_name}_SR_raw.mp4")
+    sr_raw_writer = _open_writer(raw_path, hr_w, hr_h, fps) if write_raw else None
+    lr_writer     = None
+    tmp_lr_path   = None
+    if write_h264:
+        tmp_lr_path = tempfile.NamedTemporaryFile(delete=False, suffix='_lr.mp4').name
+        lr_writer   = _open_writer_nvenc(tmp_lr_path, lr_w, lr_h, fps)
+
+    raw_records = []
+    for bgr in tqdm(_iter_frames(video_path), total=n_frames,
+                    desc=f'  raw  {video_name[:30]}', unit='frame', leave=False):
+        src    = _crop(bgr)
+        lq_bgr = cv2.resize(src, (lr_w, lr_h), interpolation=cv2.INTER_CUBIC)
+        gt_bgr = cv2.resize(src, (hr_w, hr_h), interpolation=cv2.INTER_CUBIC)
+
+        sr_bgr = _run_sr(model, _bgr_to_tensor(lq_bgr, device), opt)
+
+        if write_raw:
+            sr_raw_writer.append_data(sr_bgr)
+        if write_h264:
+            lr_writer.append_data(lq_bgr)
+        if write_raw and not skip_metrics:
+            raw_records.append(_frame_metrics(sr_bgr, gt_bgr, lpips_fn, device))
+
+    if write_raw:
+        sr_raw_writer.close()
+        logger.info(f"  Saved raw SR : {raw_path}")
+    if write_h264:
+        lr_writer.close()
+
+    # Free CUDA cache once per video rather than per frame
+    torch.cuda.empty_cache()
+
+    raw_m = _average(raw_records) if raw_records else {'psnr': 0.0, 'ssim': 0.0, 'lpips': 0.0}
+    if write_raw and not skip_metrics:
+        logger.info(f"  Raw  — PSNR: {raw_m['psnr']:.4f}  SSIM: {raw_m['ssim']:.4f}  LPIPS: {raw_m['lpips']:.4f}")
+
+    # --- Pass 2: compressed LR → SR ---
+    h264_m = {'psnr': 0.0, 'ssim': 0.0, 'lpips': 0.0}
+    if write_h264:
+        h264_path      = osp.join(save_dir, f"{video_name}_SR_h264.mp4")
+        sr_h264_writer = _open_writer(h264_path, hr_w, hr_h, fps)
+        h264_records   = []
+        orig_iter      = _iter_frames(video_path)
+
+        for lr_bgr in tqdm(_iter_frames(tmp_lr_path), total=n_frames,
+                           desc=f'  h264 {video_name[:30]}', unit='frame', leave=False):
+            orig_bgr = next(orig_iter, None)
+            gt_bgr   = cv2.resize(_crop(orig_bgr), (hr_w, hr_h), interpolation=cv2.INTER_CUBIC)
+
+            # nvenc may adjust dimensions to even numbers; correct if needed
+            if lr_bgr.shape[:2] != (lr_h, lr_w):
+                lr_bgr = cv2.resize(lr_bgr, (lr_w, lr_h), interpolation=cv2.INTER_CUBIC)
+
+            sr_bgr = _run_sr(model, _bgr_to_tensor(lr_bgr, device), opt)
+            sr_h264_writer.append_data(sr_bgr)
+            if not skip_metrics:
+                h264_records.append(_frame_metrics(sr_bgr, gt_bgr, lpips_fn, device))
+
+        sr_h264_writer.close()
+        os.remove(tmp_lr_path)
+        torch.cuda.empty_cache()
+
+        h264_m = _average(h264_records) if h264_records else {'psnr': 0.0, 'ssim': 0.0, 'lpips': 0.0}
+        logger.info(f"  Saved H264 SR: {h264_path}")
+        if not skip_metrics:
+            logger.info(f"  H264 — PSNR: {h264_m['psnr']:.4f}  SSIM: {h264_m['ssim']:.4f}  LPIPS: {h264_m['lpips']:.4f}")
+
+    return raw_m, h264_m
+
+
+# ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def test_video_pipeline(root_path, write_raw=True, write_h264=True, skip_metrics=False):
+def test_video_pipeline(root_path, write_raw=True, write_h264=False, skip_metrics=False, compute_lpips=True, crop_to_640=False):
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument('--weights', type=str, default=None,
+                     help='Path to a .pth checkpoint to override pretrain_network_g in the config')
+    pre.add_argument('--video', type=str, default=None,
+                     help='Process only this video (stem without extension)')
+    pre.add_argument('--print_summary', action='store_true',
+                     help='Print model architecture, parameter count, and GMacs before inference')
+    pre.add_argument('--summary_size', type=int, default=320,
+                     help='Square benchmark input size for GMacs profiling (must be divisible by window_size=16, default: 320)')
+    pre.add_argument('--no_lpips', action='store_true',
+                     help='Skip LPIPS computation (still computes PSNR and SSIM)')
+    extra, remaining = pre.parse_known_args()
+    sys.argv = [sys.argv[0]] + remaining
+
     opt, _ = parse_options(root_path, is_train=False)
+
+    if extra.weights is not None:
+        opt['path']['pretrain_network_g'] = osp.abspath(extra.weights)
+
     torch.backends.cudnn.benchmark = True
 
     make_exp_dirs(opt)
@@ -232,19 +327,26 @@ def test_video_pipeline(root_path, write_raw=True, write_h264=True, skip_metrics
     logger.info(dict2str(opt))
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    lpips_fn = lpips.LPIPS(net='alex').to(device).eval()
 
     model = build_model(opt)
 
-    for _, dataset_opt in sorted(opt['datasets'].items()):
-        test_set = build_dataset(dataset_opt)
-        test_loader = build_dataloader(
-            test_set, dataset_opt,
-            num_gpu=opt['num_gpu'], dist=opt['dist'],
-            sampler=None, seed=opt['manual_seed']
-        )
+    if extra.print_summary:
+        _print_model_summary(model, logger, bench_size=extra.summary_size)
 
-        if test_set.__class__.__name__ not in ['VideoPairedDataset', 'RealVideoSingleImageDataset']:
+    # Load LPIPS only when metrics are needed — avoids occupying GPU memory otherwise
+    lpips_fn = None
+    if not skip_metrics and compute_lpips:
+        import lpips as _lpips
+        lpips_fn = _lpips.LPIPS(net='alex').to(device).eval()
+
+    for _, dataset_opt in sorted(opt['datasets'].items()):
+        if dataset_opt.get('type') != 'VideoPairedDataset':
+            test_set    = build_dataset(dataset_opt)
+            test_loader = build_dataloader(
+                test_set, dataset_opt,
+                num_gpu=opt['num_gpu'], dist=opt['dist'],
+                sampler=None, seed=opt['manual_seed']
+            )
             model.validation(test_loader, current_iter=opt['name'],
                              tb_logger=None, save_img=opt['val']['save_img'])
             continue
@@ -254,51 +356,37 @@ def test_video_pipeline(root_path, write_raw=True, write_h264=True, skip_metrics
         os.makedirs(save_dir, exist_ok=True)
         csv_path     = osp.join(save_dir, 'metrics.csv')
 
-        logger.info(f"Dataset: {dataset_name}  |  {len(test_set)} frames total")
+        scale  = dataset_opt.get('scale', 2)
+        hr_h   = dataset_opt.get('hr_height', 360)
+        hr_w   = dataset_opt.get('hr_width', 640)
+        lr_h, lr_w = hr_h // scale, hr_w // scale
 
-        # Group frames by video — preserves per-video ordering
-        video_frames = defaultdict(list)
-        for val_data in test_loader:
-            video_frames[val_data['video_name'][0]].append(val_data)
+        video_dir   = dataset_opt['dataroot_hr']
+        video_paths = sorted(
+            osp.join(video_dir, f) for f in os.listdir(video_dir)
+            if f.endswith(('.mp4', '.avi'))
+        )
+
+        logger.info(f"Dataset: {dataset_name}  |  {len(video_paths)} videos")
+        logger.info(f"HR: {hr_h}x{hr_w}  LQ: {lr_h}x{lr_w}")
 
         all_rows = []
-
         with open(csv_path, 'w', newline='') as f:
             csv_writer = csv.DictWriter(f, fieldnames=_FIELDS)
             csv_writer.writeheader()
 
+            for video_path in video_paths:
+                video_name = osp.splitext(osp.basename(video_path))[0]
+                if extra.video is not None and video_name != extra.video:
+                    continue
 
-            for video_name, frames_data in video_frames.items():
-                fps = test_set.video_fps.get(video_name, 30)
-                logger.info(f"\n{'='*60}")
-                logger.info(f"Video: {video_name}  ({len(frames_data)} frames @ {fps:.2f}fps)")
-
-                raw_m = h264_m = {'psnr': 0, 'ssim': 0, 'lpips': 0}
-                sr_frames = gt_frames = sr_frames_h264 = None
-
-                # Case 1: Raw LR -> SR
-                if write_raw:
-                    logger.info("  [1/2] Raw: LR -> SR model")
-                    sr_frames, gt_frames = _run_inference(model, frames_data, opt, desc='raw inference')
-                    raw_path = osp.join(save_dir, f"{video_name}_SR_raw.mp4")
-                    raw_m    = _write_and_measure(sr_frames, gt_frames, raw_path, fps, lpips_fn, device, skip_metrics=skip_metrics)
-                    if not skip_metrics:
-                        logger.info(f"  Raw  — PSNR: {raw_m['psnr']:.4f}  SSIM: {raw_m['ssim']:.4f}  LPIPS: {raw_m['lpips']:.4f}")
-                    logger.info(f"  Saved: {raw_path}")
-
-                # Case 2: LR -> H264 compress -> SR (DVR approach)
-                if write_h264:
-                    logger.info("  [2/2] H264: LR -> H264 compress -> SR model")
-                    if sr_frames is None or gt_frames is None:
-                        # If raw wasn't run, need to get gt_frames
-                        sr_frames, gt_frames = _run_inference(model, frames_data, opt, desc='raw inference (for gt)')
-                    compressed_frames_data = _compress_lr_frames(frames_data, fps, crf=20)
-                    sr_frames_h264, _ = _run_inference(model, compressed_frames_data, opt, desc='h264 inference')
-                    h264_path = osp.join(save_dir, f"{video_name}_SR_h264.mp4")
-                    h264_m    = _write_and_measure(sr_frames_h264, gt_frames, h264_path, fps, lpips_fn, device, skip_metrics=skip_metrics)
-                    if not skip_metrics:
-                        logger.info(f"  H264 — PSNR: {h264_m['psnr']:.4f}  SSIM: {h264_m['ssim']:.4f}  LPIPS: {h264_m['lpips']:.4f}")
-                    logger.info(f"  Saved: {h264_path}")
+                raw_m, h264_m = _process_video(
+                    video_path, model, opt, save_dir,
+                    lr_h, lr_w, hr_h, hr_w,
+                    lpips_fn, device,
+                    write_raw, write_h264, skip_metrics, logger,
+                    crop_to_640=crop_to_640,
+                )
 
                 if not skip_metrics:
                     row = _make_row(video_name, raw_m, h264_m)
@@ -313,13 +401,11 @@ def test_video_pipeline(root_path, write_raw=True, write_h264=True, skip_metrics
                 csv_writer.writerow(mean_row)
                 logger.info(f"\n{'='*60}")
                 logger.info(f"MEAN Raw  — PSNR: {mean_row['psnr_raw']}  SSIM: {mean_row['ssim_raw']}  LPIPS: {mean_row['lpips_raw']}")
-                logger.info(f"MEAN H264 — PSNR: {mean_row['psnr_h264']}  SSIM: {mean_row['ssim_h264']}  LPIPS: {mean_row['lpips_h264']}")
+                if write_h264:
+                    logger.info(f"MEAN H264 — PSNR: {mean_row['psnr_h264']}  SSIM: {mean_row['ssim_h264']}  LPIPS: {mean_row['lpips_h264']}")
                 logger.info(f"Metrics saved to: {csv_path}")
 
 
 if __name__ == '__main__':
-    # Set this to False to skip H264 video generation
-    make_h264 = False  # Change to True to enable H264 video generation
     root_path = osp.abspath(osp.join(__file__, osp.pardir, osp.pardir))
-    # Example usage: set write_raw or write_h264 as needed
-    test_video_pipeline(root_path, write_raw=True, write_h264=True, skip_metrics=True)
+    test_video_pipeline(root_path, write_raw=True, write_h264=False, skip_metrics=False, compute_lpips=False, crop_to_640=False)

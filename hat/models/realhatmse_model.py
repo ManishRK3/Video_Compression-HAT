@@ -5,7 +5,7 @@ from hat.data.degradations import random_add_gaussian_noise_pt, random_add_poiss
 from hat.data.transforms import paired_random_crop
 from hat.models.sr_model import SRModel
 from hat.utils import DiffJPEG, USMSharp
-from hat.utils.img_process_util import filter2D
+from hat.utils.image_util import filter2D
 from hat.utils.registry import MODEL_REGISTRY
 from torch.nn import functional as F
 

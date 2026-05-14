@@ -140,3 +140,9 @@ dmypy.json
 .pyre/
 
 *.mp4
+
+Activating More Pixels in Image Super-Resolution Transformer.pdf
+CLAUDE.md
+extract_test_frames.ipynb
+macs.ipynb
+.claude

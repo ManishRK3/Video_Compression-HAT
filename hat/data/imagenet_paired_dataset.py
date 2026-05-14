@@ -7,8 +7,8 @@ from torchvision.transforms.functional import normalize
 from hat.data.data_util import paths_from_lmdb, scandir
 from hat.data.transforms import augment, paired_random_crop
 from hat.utils import FileClient, imfrombytes, img2tensor
-from hat.utils.matlab_functions import imresize
-from hat.utils.color_util import rgb2ycbcr
+from hat.utils.image_util import imresize
+from hat.utils.image_util import rgb2ycbcr
 from hat.utils.registry import DATASET_REGISTRY
 
 

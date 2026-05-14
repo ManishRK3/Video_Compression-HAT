@@ -1,0 +1,117 @@
+# Experiment 2: Large patches (gt_size=256, img_size=128)
+# Hypothesis: Video compression artifacts span large spatial regions (blocking, ringing).
+# Bigger patches give more context per crop, so the model sees full artifact extent.
+# img_size must equal gt_size / scale = 256 / 2 = 128; window_size=16 divides 128 evenly.
+name: train_HAT-XS_SRx2_exp2_largepatch
+model_type: HATModel
+scale: 2
+num_gpu: 1
+manual_seed: 0
+
+datasets:
+  train:
+    name: VC360p
+    type: PairedImageDataset
+    dataroot_gt: /home/manish/Data/Video_Compression_360p/training_data_v3/train/train_hq
+    dataroot_lq: /home/manish/Data/Video_Compression_360p/training_data_v3/train/train_lq
+    io_backend:
+      type: disk
+
+    gt_size: 256          # was 128
+    use_hflip: true
+    use_rot: true
+
+    use_shuffle: true
+    num_worker_per_gpu: 6
+    batch_size_per_gpu: 4  # reduced from 6 (2.25x tokens => quadratic attention cost)
+    dataset_enlarge_ratio: 1
+    prefetch_mode: ~
+
+  val_1:
+    name: VC360p_val
+    type: PairedImageDataset
+    dataroot_gt: /home/manish/Data/Video_Compression_360p/training_data_v3/val_3/val_hq
+    dataroot_lq: /home/manish/Data/Video_Compression_360p/training_data_v3/val_3/val_lq
+    io_backend:
+      type: disk
+
+# network structures
+network_g:
+  type: HAT
+  upscale: 2
+  in_chans: 3
+  img_size: 128          # was 64 (must match gt_size / scale)
+  window_size: 16       # 128/16=8 windows/dim, evenly divisible
+  compress_ratio: 9
+  squeeze_factor: 30
+  conv_scale: 0.01
+  overlap_ratio: 0.5
+  img_range: 1.
+  depths: [6, 6, 6, 6, 6, 6]
+  embed_dim: 108
+  num_heads: [6, 6, 6, 6, 6, 6]
+  mlp_ratio: 2
+  upsampler: 'pixelshuffle'
+  resi_connection: '1conv'
+
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~
+
+train:
+  ema_decay: 0.999
+  optim_g:
+    type: Adam
+    lr: !!float 2e-4
+    weight_decay: 0
+    betas: [0.9, 0.99]
+
+  scheduler:
+    type: MultiStepLR
+    milestones: [150000, 240000, 270000, 285000]
+    gamma: 0.5
+
+  total_iter: 300000
+  warmup_iter: -1
+
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0
+    reduction: mean
+
+val:
+  val_freq: !!float 1e4
+  save_img: false
+  pbar: False
+
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 2
+      test_y_channel: true
+      better: higher
+    ssim:
+      type: calculate_ssim
+      crop_border: 2
+      test_y_channel: true
+      better: higher
+
+  early_stop:
+    metric: psnr
+    min_delta: 0.01
+    patience: 5
+
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+dist_params:
+  backend: nccl
+  port: 29501
+
+# python hat/train.py -opt options/train/train_HAT-XS_SRx2_360p_exp2_largepatch.yml
